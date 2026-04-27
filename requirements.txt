@@ -1,5 +1,23 @@
 asgiref==3.11.1
 Django==5.2.13
-sqlparse==0.5.5
-typing_extensions==4.15.0
-tzdata==2026.2
+sqlparse==0.5.3
+typing_extensions==4.12.2
+tzdata==2025.2
+
+# Django REST Framework
+djangorestframework==3.15.2
+
+# JWT Authentication
+djangorestframework-simplejwt==5.3.1
+PyJWT==2.9.0
+
+# OAuth2
+django-oauth-toolkit==2.4.0
+oauthlib==3.2.2
+requests-oauthlib==2.0.0
+
+# Optional but recommended
+django-cors-headers==4.4.0
+cryptography==43.0.3
+drf-yasg==1.21.7
+Pillow==10.4.0
