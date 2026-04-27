@@ -10,6 +10,7 @@ from .views import (
     ForgotPasswordView,
     ResetPasswordView,
     GoogleOAuthView,
+    CreateAdminView,
 )
 
 urlpatterns = [
@@ -22,4 +23,5 @@ urlpatterns = [
     path("forgot-password/", ForgotPasswordView.as_view(), name="auth-forgot-password"),
     path("reset-password/", ResetPasswordView.as_view(), name="auth-reset-password"),
     path("google/", GoogleOAuthView.as_view(), name="auth-google"),
+    path("admin/create/", CreateAdminView.as_view(), name="auth-create-admin"),
 ]

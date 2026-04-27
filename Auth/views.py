@@ -35,7 +35,10 @@ class RegisterView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Register a new user",
-        operation_description="Creates a new NABAT account. Username is automatically set to the email address.",
+        operation_description=(
+            "Creates a new NABTA account. The role is always set to **farmer** automatically — "
+            "you cannot choose a role at registration. Username is automatically set to the email address."
+        ),
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["email", "password", "confirm_password"],
@@ -62,6 +65,7 @@ class RegisterView(APIView):
                                 "email": openapi.Schema(type=openapi.TYPE_STRING),
                                 "first_name": openapi.Schema(type=openapi.TYPE_STRING),
                                 "last_name": openapi.Schema(type=openapi.TYPE_STRING),
+                                "role": openapi.Schema(type=openapi.TYPE_STRING, example="farmer", description="Always 'farmer' for self-registered accounts."),
                             },
                         ),
                         "tokens": openapi.Schema(
@@ -104,6 +108,7 @@ class RegisterView(APIView):
             first_name=first_name,
             last_name=last_name,
             phone=phone,
+            role='farmer',
         )
 
         tokens = get_tokens_for_user(user)
@@ -116,6 +121,7 @@ class RegisterView(APIView):
                     "email": user.email,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
+                    "role": user.role,
                 },
                 "tokens": tokens,
             },
@@ -630,4 +636,103 @@ class GoogleOAuthView(APIView):
                 "tokens": tokens,
             },
             status=status.HTTP_200_OK,
+        )
+
+class CreateAdminView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Create a new admin account",
+        operation_description=(
+            "Allows an existing admin to create a new admin account directly. "
+            "The created user will have the **admin** role and `is_staff=True` automatically. "
+            "Only users with `role='admin'` can access this endpoint.\n\n"
+            "**Authorization:** `Bearer <admin_access_token>`"
+        ),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["email", "password", "confirm_password"],
+            properties={
+                "email": openapi.Schema(type=openapi.TYPE_STRING, format="email", example="newadmin@nabta.com"),
+                "password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="AdminPass123!"),
+                "confirm_password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="AdminPass123!"),
+                "first_name": openapi.Schema(type=openapi.TYPE_STRING, example="Karim"),
+                "last_name": openapi.Schema(type=openapi.TYPE_STRING, example="Mansouri"),
+                "phone": openapi.Schema(type=openapi.TYPE_STRING, example="+213555987654"),
+            },
+        ),
+        responses={
+            201: openapi.Response(
+                description="Admin account created successfully",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "message": openapi.Schema(type=openapi.TYPE_STRING),
+                        "admin": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "id": openapi.Schema(type=openapi.TYPE_STRING, format="uuid"),
+                                "email": openapi.Schema(type=openapi.TYPE_STRING),
+                                "first_name": openapi.Schema(type=openapi.TYPE_STRING),
+                                "last_name": openapi.Schema(type=openapi.TYPE_STRING),
+                                "role": openapi.Schema(type=openapi.TYPE_STRING, example="admin"),
+                                "is_staff": openapi.Schema(type=openapi.TYPE_BOOLEAN, example=True),
+                                "created_at": openapi.Schema(type=openapi.TYPE_STRING, format="date-time"),
+                            },
+                        ),
+                    },
+                ),
+            ),
+            400: "Validation error (email taken, password mismatch, weak password)",
+            403: "Forbidden — only admins can access this endpoint",
+        },
+        security=[{"Bearer": []}],
+        tags=["Admin"],
+    )
+    def post(self, request):
+        if request.user.role != 'admin':
+            return Response({"error": "Only admins can create admin accounts."}, status=status.HTTP_403_FORBIDDEN)
+
+        email = request.data.get("email", "").strip().lower()
+        password = request.data.get("password", "")
+        confirm_password = request.data.get("confirm_password", "")
+        first_name = request.data.get("first_name", "")
+        last_name = request.data.get("last_name", "")
+        phone = request.data.get("phone", "")
+
+        if not email or not password:
+            return Response({"error": "Email and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if password != confirm_password:
+            return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(password) < 8:
+            return Response({"error": "Password must be at least 8 characters."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if User.objects.filter(email=email).exists():
+            return Response({"error": "An account with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        new_admin = User.objects.create_user(
+            email=email,
+            password=password,
+            first_name=first_name,
+            last_name=last_name,
+            phone=phone,
+            role='admin',
+        )
+
+        return Response(
+            {
+                "message": "Admin account created successfully.",
+                "admin": {
+                    "id": str(new_admin.id),
+                    "email": new_admin.email,
+                    "first_name": new_admin.first_name,
+                    "last_name": new_admin.last_name,
+                    "role": new_admin.role,
+                    "is_staff": new_admin.is_staff,
+                    "created_at": new_admin.created_at,
+                },
+            },
+            status=status.HTTP_201_CREATED,
         )

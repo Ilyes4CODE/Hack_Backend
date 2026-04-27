@@ -43,7 +43,15 @@ INSTALLED_APPS = [
     "oauth2_provider",
     "corsheaders",
     "drf_yasg",
-    "Auth",
+    'Auth',
+    'chatbot',
+    'diagnosis',
+    'crops',
+    'locator',
+    'journal',
+    'calculator',
+    'gallery',
+    'reports',
 ]
 
 MIDDLEWARE = [
