@@ -35,4 +35,8 @@ uritemplate==4.2.0
 urllib3==2.6.3
 weasyprint==68.1
 webencodings==0.5.1
+<<<<<<< HEAD
 zopfli==0.4.1
+=======
+zopfli==0.4.1
+>>>>>>> 743d7ae69b4c926f08961981c4cc2be0426bd95d
