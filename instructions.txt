@@ -1,0 +1,7 @@
+1 - install mysys from : https://www.msys2.org
+2 - open mysys and type these commands : 
+  a - pacman -S mingw-w64-x86_64-glib2
+  b - pacman -S mingw-w64-x86_64-gtk3
+3 - Then add this path to Windows PATH : C:\msys64\mingw64\bin
+
+#these instructions for pdf export functions
