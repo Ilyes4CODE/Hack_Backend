@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NABTA Weekly Report — {{ week_start }} to {{ week_end }}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; font-size: 13px; color: #1a1a1a; padding: 40px; }
+    .header { background: #2d6a4f; color: white; padding: 24px 30px; border-radius: 8px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 22px; letter-spacing: 1px; }
+    .header p { font-size: 11px; opacity: 0.85; margin-top: 4px; }
+    .header .meta { text-align: right; font-size: 11px; opacity: 0.85; }
+    .section { margin-bottom: 28px; }
+    .section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #2d6a4f; border-bottom: 2px solid #2d6a4f; padding-bottom: 5px; margin-bottom: 14px; }
+    .stat-row { display: flex; gap: 16px; margin-bottom: 20px; }
+    .stat-box { flex: 1; background: #f0f7f4; border-left: 4px solid #2d6a4f; padding: 14px 18px; border-radius: 4px; }
+    .stat-box .number { font-size: 28px; font-weight: bold; color: #2d6a4f; }
+    .stat-box .label { font-size: 11px; color: #555; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { background: #2d6a4f; color: white; padding: 8px 12px; text-align: left; font-weight: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 8px 12px; border-bottom: 1px solid #e8e8e8; }
+    tr:nth-child(even) td { background: #f9f9f9; }
+    .badge { display: inline-block; background: #d8f3dc; color: #2d6a4f; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: bold; }
+    .treatment-box { background: #f0f7f4; border: 1px solid #b7e4c7; border-radius: 6px; padding: 12px 16px; margin-bottom: 10px; }
+    .treatment-box .disease { font-weight: bold; color: #1b4332; margin-bottom: 4px; }
+    .treatment-box .rec { color: #333; font-size: 12px; }
+    .ai-box { background: #1b4332; color: #fff; border-radius: 8px; padding: 20px 24px; margin-bottom: 28px; }
+    .ai-box h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #b7e4c7; border-bottom: 1px solid #2d6a4f; padding-bottom: 6px; margin-bottom: 12px; }
+    .ai-box p { font-size: 13px; line-height: 1.7; color: #d8f3dc; }
+    .no-data { color: #999; font-style: italic; font-size: 12px; padding: 10px 0; }
+    .footer { margin-top: 40px; border-top: 1px solid #ddd; padding-top: 14px; font-size: 10px; color: #888; display: flex; justify-content: space-between; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div>
+      <h1>🌾 NABTA — Weekly Diagnostic Report</h1>
+      <p>Period: {{ week_start }} to {{ week_end }}</p>
+    </div>
+    <div class="meta">
+      Generated: {{ generated_at|date:"Y-m-d H:i" }}<br>
+      Algeria Agricultural Intelligence
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="stat-row">
+      <div class="stat-box">
+        <div class="number">{{ total_diagnoses }}</div>
+        <div class="label">Total Diagnoses This Week</div>
+      </div>
+      <div class="stat-box">
+        <div class="number">{{ top_crops|length }}</div>
+        <div class="label">Crops Affected</div>
+      </div>
+      <div class="stat-box">
+        <div class="number">{{ top_diseases|length }}</div>
+        <div class="label">Distinct Diseases Detected</div>
+      </div>
+      <div class="stat-box">
+        <div class="number">{{ wilaya_breakdown|length }}</div>
+        <div class="label">Wilayas Reporting</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ai-box">
+    <h2>🤖 AI Agronomic Advisory — Powered by Groq</h2>
+    <p>{{ ai_recommendations }}</p>
+  </div>
+
+  <div class="section">
+    <h2>Top Diseases Detected</h2>
+    {% if top_diseases %}
+    <table>
+      <thead>
+        <tr><th>#</th><th>Disease</th><th>Cases</th></tr>
+      </thead>
+      <tbody>
+        {% for disease, count in top_diseases %}
+        <tr>
+          <td>{{ forloop.counter }}</td>
+          <td>{{ disease }}</td>
+          <td><span class="badge">{{ count }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="no-data">No diseases recorded this week.</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h2>Crops Affected</h2>
+    {% if top_crops %}
+    <table>
+      <thead>
+        <tr><th>Crop</th><th>Diagnoses</th></tr>
+      </thead>
+      <tbody>
+        {% for crop, count in top_crops %}
+        <tr>
+          <td>{{ crop }}</td>
+          <td><span class="badge">{{ count }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="no-data">No crops recorded this week.</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h2>Recommended Treatments</h2>
+    {% if treatments %}
+      {% for disease, treatment in treatments.items %}
+      <div class="treatment-box">
+        <div class="disease">{{ disease }}</div>
+        <div class="rec">{{ treatment }}</div>
+      </div>
+      {% endfor %}
+    {% else %}
+    <p class="no-data">No treatment data available this week.</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h2>Regional Breakdown by Wilaya</h2>
+    {% if wilaya_breakdown %}
+    <table>
+      <thead>
+        <tr><th>Wilaya</th><th>Cases Reported</th></tr>
+      </thead>
+      <tbody>
+        {% for wilaya, count in wilaya_breakdown.items %}
+        <tr>
+          <td>{{ wilaya }}</td>
+          <td><span class="badge">{{ count }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="no-data">No regional data available.</p>
+    {% endif %}
+  </div>
+
+  <div class="footer">
+    <span>NABTA — Agronomic Intelligence Platform — Algeria</span>
+    <span>{{ week_start }} / {{ week_end }} — Confidential</span>
+  </div>
+
+</body>
+</html>
