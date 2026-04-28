@@ -83,7 +83,8 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'Hack_Backend.wsgi.application'
-
+GROQ_API_KEY = ""
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
