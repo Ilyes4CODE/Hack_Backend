@@ -4,7 +4,7 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.conf import settings
 from django.utils.html import strip_tags
-
+from rest_framework.parsers import MultiPartParser, FormParser,JSONParser
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -399,7 +399,7 @@ class LogoutView(APIView):
 
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
-
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     @swagger_auto_schema(
         operation_summary="Get current user profile",
         responses={200: "User profile"},
@@ -702,76 +702,3 @@ class GoogleOAuthView(APIView):
         )
 
 
-class CreateAdminView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Create a new admin account",
-        operation_description="Allows an existing admin to create a new admin account. Only admins can access this.",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["email", "password", "confirm_password"],
-            properties={
-                "email": openapi.Schema(type=openapi.TYPE_STRING, format="email", example="newadmin@nabta.com"),
-                "password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
-                "confirm_password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
-                "first_name": openapi.Schema(type=openapi.TYPE_STRING),
-                "last_name": openapi.Schema(type=openapi.TYPE_STRING),
-                "phone": openapi.Schema(type=openapi.TYPE_STRING),
-            },
-        ),
-        responses={
-            201: "Admin created",
-            400: "Validation error",
-            403: "Only admins can access this",
-        },
-        security=[{"Bearer": []}],
-        tags=["Admin"],
-    )
-    def post(self, request):
-        if request.user.role != 'admin':
-            return Response({"error": "Only admins can create admin accounts."}, status=status.HTTP_403_FORBIDDEN)
-
-        email = request.data.get("email", "").strip().lower()
-        password = request.data.get("password", "")
-        confirm_password = request.data.get("confirm_password", "")
-        first_name = request.data.get("first_name", "")
-        last_name = request.data.get("last_name", "")
-        phone = request.data.get("phone", "")
-
-        if not email or not password:
-            return Response({"error": "Email and password are required."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if password != confirm_password:
-            return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if len(password) < 8:
-            return Response({"error": "Password must be at least 8 characters."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if User.objects.filter(email=email).exists():
-            return Response({"error": "An account with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
-
-        new_admin = User.objects.create_user(
-            email=email,
-            password=password,
-            first_name=first_name,
-            last_name=last_name,
-            phone=phone or None,
-            role='admin',
-        )
-
-        return Response(
-            {
-                "message": "Admin account created successfully.",
-                "admin": {
-                    "id": str(new_admin.id),
-                    "email": new_admin.email,
-                    "first_name": new_admin.first_name,
-                    "last_name": new_admin.last_name,
-                    "role": new_admin.role,
-                    "is_staff": new_admin.is_staff,
-                    "created_at": new_admin.created_at,
-                },
-            },
-            status=status.HTTP_201_CREATED,
-        )

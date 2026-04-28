@@ -4,7 +4,7 @@ from rest_framework import status
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 
-from Auth.permissions import IsFarmerOrAdmin
+from Auth.permissions import IsFarmer
 from .models import ITDASReference
 
 
@@ -55,7 +55,7 @@ calculate_response = openapi.Schema(
 
 
 class CalculateInputsView(APIView):
-    permission_classes = [IsFarmerOrAdmin]
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
         operation_summary="Calculate NPK and irrigation needs",
@@ -148,7 +148,7 @@ class CalculateInputsView(APIView):
 
 
 class CropStagesView(APIView):
-    permission_classes = [IsFarmerOrAdmin]
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
         operation_summary="List available crops and growth stages",
@@ -176,7 +176,7 @@ class CropStagesView(APIView):
 
 
 class ITDASReferenceTableView(APIView):
-    permission_classes = [IsFarmerOrAdmin]
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
         operation_summary="Get full ITDAS reference table",

@@ -1,214 +1,226 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.shortcuts import get_object_or_404
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from rest_framework.parsers import MultiPartParser, FormParser
-from Auth.permissions import IsFarmerOrAdmin, IsAdminRole
-from .models import GalleryPhoto
+from Auth.permissions import IsFarmer
+from .models import Post, PostImage, Comment
+from django.utils import timezone
 
-
-class GalleryListView(APIView):
-    permission_classes = [IsFarmerOrAdmin]
+class PostListView(APIView):
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
-        operation_summary="Browse community disease gallery",
-        operation_description=(
-            "Returns approved photos submitted by farmers. "
-            "Filterable by crop type and wilaya. "
-            "Acts as a visual map of active disease outbreaks across Algeria."
-        ),
+        operation_summary="Browse community disease posts",
+        operation_description="Returns anonymized posts submitted by farmers. Filterable by crop, wilaya, and disease tag.",
         manual_parameters=[
-            openapi.Parameter('crop', openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False,
-                enum=['wheat','tomato','olive','date_palm','potato','onion','pepper','watermelon','citrus','barley']),
+            openapi.Parameter('crop', openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False, enum=['wheat','tomato','olive','date_palm','potato','onion','pepper','watermelon','citrus','barley']),
             openapi.Parameter('wilaya', openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
             openapi.Parameter('disease_tag', openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
         ],
-        responses={
-            200: openapi.Response('Gallery photos', openapi.Schema(
-                type=openapi.TYPE_ARRAY,
-                items=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        'id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                        'image_url': openapi.Schema(type=openapi.TYPE_STRING),
-                        'crop': openapi.Schema(type=openapi.TYPE_STRING),
-                        'wilaya': openapi.Schema(type=openapi.TYPE_STRING),
-                        'disease_tag': openapi.Schema(type=openapi.TYPE_STRING),
-                        'submitted_at': openapi.Schema(type=openapi.TYPE_STRING, format='date-time'),
-                    }
-                )
-            )),
-            401: 'Unauthorized',
-        },
+        responses={200: 'List of posts', 401: 'Unauthorized'},
         security=[{"Bearer": []}],
         tags=['Gallery']
     )
     def get(self, request):
-        qs = GalleryPhoto.objects.filter(is_approved=True).order_by('-submitted_at')
-
+        qs = Post.objects.all().order_by('-created_at')
         crop = request.query_params.get('crop')
         wilaya = request.query_params.get('wilaya')
         disease_tag = request.query_params.get('disease_tag')
 
-        if crop:
-            qs = qs.filter(crop=crop)
-        if wilaya:
-            qs = qs.filter(wilaya__icontains=wilaya)
-        if disease_tag:
-            qs = qs.filter(disease_tag__icontains=disease_tag)
+        if crop: qs = qs.filter(crop=crop)
+        if wilaya: qs = qs.filter(wilaya__icontains=wilaya)
+        if disease_tag: qs = qs.filter(disease_tag__icontains=disease_tag)
 
-        data = [
-            {
-                'id': p.id,
-                'image_url': request.build_absolute_uri(p.image.url),
+        data = []
+        for p in qs:
+            data.append({
+                'id': str(p.id),
+                'caption': p.caption,
                 'crop': p.crop,
                 'wilaya': p.wilaya,
                 'disease_tag': p.disease_tag,
-                'submitted_at': p.submitted_at,
-            }
-            for p in qs
-        ]
+                'created_at': p.created_at,
+                'images': [request.build_absolute_uri(img.image.url) for img in p.images.all()],
+                'comments_count': p.comments.count(),
+                'is_author': p.author.id == request.user.id
+            })
         return Response(data, status=status.HTTP_200_OK)
 
-
-class GallerySubmitView(APIView):
-    permission_classes = [IsFarmerOrAdmin]
+class PostCreateView(APIView):
+    permission_classes = [IsFarmer]
     parser_classes = [MultiPartParser, FormParser]
+
     @swagger_auto_schema(
-        operation_summary="Submit a photo to the community gallery",
-        operation_description=(
-            "Farmer submits a photo of a diseased crop. "
-            "Photo is anonymized — no user identity is stored or returned. "
-            "Submitted photos require admin approval before appearing in the gallery."
-        ),
+        operation_summary="Submit a community post",
+        operation_description="Farmer submits a post with multiple images, caption, crop, wilaya, and optional disease tag. Immediately visible to all farmers.",
         manual_parameters=[
-            openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE, required=True),
+            openapi.Parameter('images', openapi.IN_FORM, type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_FILE), required=True),
+            openapi.Parameter('caption', openapi.IN_FORM, type=openapi.TYPE_STRING, required=False),
             openapi.Parameter('crop', openapi.IN_FORM, type=openapi.TYPE_STRING, required=True),
             openapi.Parameter('wilaya', openapi.IN_FORM, type=openapi.TYPE_STRING, required=True),
             openapi.Parameter('disease_tag', openapi.IN_FORM, type=openapi.TYPE_STRING, required=False),
         ],
         consumes=['multipart/form-data'],
-        responses={
-            201: openapi.Response('Photo submitted', openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    'message': openapi.Schema(type=openapi.TYPE_STRING),
-                    'id': openapi.Schema(type=openapi.TYPE_INTEGER),
-                }
-            )),
-            400: 'Missing required fields',
-            401: 'Unauthorized',
-        },
+        responses={201: 'Post created', 400: 'Validation error', 401: 'Unauthorized'},
         security=[{"Bearer": []}],
         tags=['Gallery']
     )
     def post(self, request):
-        image = request.FILES.get('image')
+        caption = request.data.get('caption', '').strip()
         crop = request.data.get('crop', '').strip()
         wilaya = request.data.get('wilaya', '').strip()
         disease_tag = request.data.get('disease_tag', '').strip()
+        images = request.FILES.getlist('images')
 
-        if not image:
-            return Response({'error': 'Image is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not crop:
-            return Response({'error': 'Crop is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
+        valid_crops = [c[0] for c in Post.CROPS]
+        if not crop or crop not in valid_crops:
+            return Response({'error': f'Invalid crop. Must be one of: {", ".join(valid_crops)}'}, status=status.HTTP_400_BAD_REQUEST)
         if not wilaya:
             return Response({'error': 'Wilaya is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not images:
+            return Response({'error': 'At least one image is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        valid_crops = ['wheat','tomato','olive','date_palm','potato','onion','pepper','watermelon','citrus','barley']
-        if crop not in valid_crops:
-            return Response(
-                {'error': f'Invalid crop. Must be one of: {", ".join(valid_crops)}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        photo = GalleryPhoto.objects.create(
-            image=image,
+        post = Post.objects.create(
+            author=request.user,
+            caption=caption,
             crop=crop,
             wilaya=wilaya,
-            disease_tag=disease_tag,
-            is_approved=False,
+            disease_tag=disease_tag
         )
 
+        for idx, img in enumerate(images):
+            PostImage.objects.create(post=post, image=img, order=idx)
+
         return Response({
-            'message': 'Photo submitted successfully. It will appear after admin approval.',
-            'id': photo.id,
+            'message': 'Post published successfully.',
+            'id': str(post.id)
         }, status=status.HTTP_201_CREATED)
 
-
-class GalleryAdminListView(APIView):
-    permission_classes = [IsAdminRole]
+class PostDetailView(APIView):
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
-        operation_summary="List all pending photos (admin)",
-        operation_description="Returns all unapproved photos waiting for admin review.",
-        responses={
-            200: 'Pending photos list',
-            401: 'Unauthorized',
-            403: 'Admin only',
-        },
+        operation_summary="Get post details with comments",
+        responses={200: 'Post details', 404: 'Not found'},
         security=[{"Bearer": []}],
-        tags=['Gallery — Admin']
+        tags=['Gallery']
     )
-    def get(self, request):
-        qs = GalleryPhoto.objects.filter(is_approved=False).order_by('-submitted_at')
-        data = [
+    def get(self, request, pk):
+        post = get_object_or_404(Post, pk=pk)
+        comments = [
             {
-                'id': p.id,
-                'image_url': request.build_absolute_uri(p.image.url),
-                'crop': p.crop,
-                'wilaya': p.wilaya,
-                'disease_tag': p.disease_tag,
-                'submitted_at': p.submitted_at,
+                'id': str(c.id),
+                'content': c.content,
+                'created_at': c.created_at,
+                'is_author': c.author.id == request.user.id
             }
-            for p in qs
+            for c in post.comments.order_by('created_at')
         ]
-        return Response(data, status=status.HTTP_200_OK)
+        return Response({
+            'id': str(post.id),
+            'caption': post.caption,
+            'crop': post.crop,
+            'wilaya': post.wilaya,
+            'disease_tag': post.disease_tag,
+            'created_at': post.created_at,
+            'images': [request.build_absolute_uri(img.image.url) for img in post.images.all()],
+            'comments': comments,
+            'is_author': post.author.id == request.user.id
+        }, status=status.HTTP_200_OK)
 
-
-class GalleryApproveView(APIView):
-    permission_classes = [IsAdminRole]
+class PostUpdateView(APIView):
+    permission_classes = [IsFarmer]
+    parser_classes = [MultiPartParser, FormParser]
 
     @swagger_auto_schema(
-        operation_summary="Approve a submitted photo (admin)",
-        operation_description="Marks a submitted photo as approved so it appears in the public gallery.",
-        responses={
-            200: 'Photo approved',
-            401: 'Unauthorized',
-            403: 'Admin only',
-            404: 'Photo not found',
-        },
+        operation_summary="Update post details (author only)",
+        consumes=['multipart/form-data'],
+        manual_parameters=[
+            openapi.Parameter('caption', openapi.IN_FORM, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter('crop', openapi.IN_FORM, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter('wilaya', openapi.IN_FORM, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter('disease_tag', openapi.IN_FORM, type=openapi.TYPE_STRING, required=False),
+        ],
+        responses={200: 'Updated', 403: 'Forbidden', 404: 'Not found'},
         security=[{"Bearer": []}],
-        tags=['Gallery — Admin']
+        tags=['Gallery']
     )
     def patch(self, request, pk):
-        photo = get_object_or_404(GalleryPhoto, pk=pk)
-        photo.is_approved = True
-        photo.save()
-        return Response({'message': 'Photo approved and now visible in the gallery.'}, status=status.HTTP_200_OK)
+        post = get_object_or_404(Post, pk=pk)
+        if post.author != request.user:
+            return Response({'error': 'Only the author can edit this post.'}, status=status.HTTP_403_FORBIDDEN)
 
+        for field in ['caption', 'crop', 'wilaya', 'disease_tag']:
+            if field in request.data:
+                setattr(post, field, request.data.get(field, '').strip())
+        post.save()
+        return Response({'message': 'Post updated successfully.'}, status=status.HTTP_200_OK)
 
-class GalleryDeleteView(APIView):
-    permission_classes = [IsAdminRole]
+class PostDeleteView(APIView):
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
-        operation_summary="Delete a gallery photo (admin)",
-        operation_description="Permanently deletes a photo from the gallery. Admin only.",
-        responses={
-            204: 'Deleted',
-            401: 'Unauthorized',
-            403: 'Admin only',
-            404: 'Photo not found',
-        },
+        operation_summary="Delete post (author only)",
+        responses={204: 'Deleted', 403: 'Forbidden', 404: 'Not found'},
         security=[{"Bearer": []}],
-        tags=['Gallery — Admin']
+        tags=['Gallery']
     )
     def delete(self, request, pk):
-        photo = get_object_or_404(GalleryPhoto, pk=pk)
-        photo.image.delete(save=False)
-        photo.delete()
+        post = get_object_or_404(Post, pk=pk)
+        if post.author != request.user:
+            return Response({'error': 'Only the author can delete this post.'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Clean up images from disk
+        for img in post.images.all():
+            img.image.delete(save=False)
+        post.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+class CommentCreateView(APIView):
+    permission_classes = [IsFarmer]
+
+    @swagger_auto_schema(
+        operation_summary="Add a comment to a post",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['content'],
+            properties={
+                'content': openapi.Schema(type=openapi.TYPE_STRING, example='This looks like early blight.')
+            }
+        ),
+        responses={201: 'Comment added', 400: 'Validation error', 404: 'Not found'},
+        security=[{"Bearer": []}],
+        tags=['Gallery']
+    )
+    def post(self, request, pk):
+        post = get_object_or_404(Post, pk=pk)
+        content = request.data.get('content', '').strip()
+        if not content:
+            return Response({'error': 'Comment content is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        comment = Comment.objects.create(post=post, author=request.user, content=content)
+        return Response({
+            'message': 'Comment added.',
+            'id': str(comment.id),
+            'content': comment.content,
+            'created_at': comment.created_at
+        }, status=status.HTTP_201_CREATED)
+
+class CommentDeleteView(APIView):
+    permission_classes = [IsFarmer]
+
+    @swagger_auto_schema(
+        operation_summary="Delete own comment",
+        responses={204: 'Deleted', 403: 'Forbidden', 404: 'Not found'},
+        security=[{"Bearer": []}],
+        tags=['Gallery']
+    )
+    def delete(self, request, pk, comment_pk):
+        comment = get_object_or_404(Comment, pk=comment_pk, post__pk=pk)
+        if comment.author != request.user:
+            return Response({'error': 'Only the author can delete this comment.'}, status=status.HTTP_403_FORBIDDEN)
+        comment.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

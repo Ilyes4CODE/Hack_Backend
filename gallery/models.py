@@ -1,23 +1,12 @@
 from django.db import models
-
-# Create your models here.
-from django.db import models
 from django.conf import settings
+import uuid
 
-
-class GalleryPhoto(models.Model):
-
+class Post(models.Model):
     CROPS = [
-        ('wheat', 'Wheat'),
-        ('tomato', 'Tomato'),
-        ('olive', 'Olive'),
-        ('date_palm', 'Date Palm'),
-        ('potato', 'Potato'),
-        ('onion', 'Onion'),
-        ('pepper', 'Pepper'),
-        ('watermelon', 'Watermelon'),
-        ('citrus', 'Citrus'),
-        ('barley', 'Barley'),
+        ('wheat', 'Wheat'), ('tomato', 'Tomato'), ('olive', 'Olive'),
+        ('date_palm', 'Date Palm'), ('potato', 'Potato'), ('onion', 'Onion'),
+        ('pepper', 'Pepper'), ('watermelon', 'Watermelon'), ('citrus', 'Citrus'), ('barley', 'Barley'),
     ]
 
     WILAYAS = [
@@ -40,12 +29,31 @@ class GalleryPhoto(models.Model):
         ('relizane', 'Relizane'),
     ]
 
-    image = models.ImageField(upload_to='gallery/')
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='posts')
+    caption = models.TextField(blank=True, default='')
     crop = models.CharField(max_length=20, choices=CROPS)
     wilaya = models.CharField(max_length=50, choices=WILAYAS)
-    disease_tag = models.CharField(max_length=100, blank=True)
-    is_approved = models.BooleanField(default=False)
-    submitted_at = models.DateTimeField(auto_now_add=True)
+    disease_tag = models.CharField(max_length=100, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.crop} — {self.wilaya} — {self.submitted_at.date()}"
+        return f"Post {self.id} - {self.crop} @ {self.wilaya}"
+
+class PostImage(models.Model):
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='images')
+    image = models.ImageField(upload_to='gallery/post_images/')
+    order = models.IntegerField(default=0)
+
+    def __str__(self):
+        return f"Image {self.order} for Post {self.post.id}"
+
+class Comment(models.Model):
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='comments')
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='comments')
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Comment by {self.author} on Post {self.post.id}"

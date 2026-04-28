@@ -7,13 +7,13 @@ from django.utils import timezone
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 import os
-from Auth.permissions import IsAdminRole
+from Auth.permissions import IsFarmer
 from .models import WeeklyReport
 from .utils import get_week_boundaries, generate_pdf_report, build_report_context, WEASYPRINT_AVAILABLE
 
 
 class GenerateReportView(APIView):
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
         operation_summary="Generate weekly PDF report",
@@ -73,7 +73,7 @@ class GenerateReportView(APIView):
 
 
 class ReportListView(APIView):
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
         operation_summary="List all generated reports",
@@ -118,7 +118,7 @@ class ReportListView(APIView):
 
 
 class ReportPreviewView(APIView):
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsFarmer]
 
     @swagger_auto_schema(
         operation_summary="Preview report data without generating PDF",

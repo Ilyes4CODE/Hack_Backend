@@ -3,7 +3,6 @@ from django.db import models
 import uuid
 import random
 
-
 class UserManager(BaseUserManager):
     def create_user(self, email=None, phone=None, password=None, **extra_fields):
         if not email and not phone:
@@ -22,15 +21,12 @@ class UserManager(BaseUserManager):
     def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
-        extra_fields.setdefault("role", "admin")
+        extra_fields.setdefault("role", "farmer")  # Changed from 'admin'
         return self.create_user(email=email, password=password, **extra_fields)
 
-
 class User(AbstractBaseUser, PermissionsMixin):
-
     ROLES = [
         ('farmer', 'Farmer'),
-        ('admin', 'Admin'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -59,13 +55,11 @@ class User(AbstractBaseUser, PermissionsMixin):
             self.username = self.email
         elif self.phone and not self.username:
             self.username = self.phone
-        if self.role == 'admin':
-            self.is_staff = True
+        # Removed admin-specific is_staff logic
         super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.email or self.phone} ({self.role})"
-
 
 class PasswordResetToken(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="reset_tokens")
@@ -80,7 +74,6 @@ class PasswordResetToken(models.Model):
 
     def __str__(self):
         return f"Reset token for {self.user}"
-
 
 class EmailVerificationCode(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="verification_codes")
