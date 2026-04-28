@@ -16,8 +16,9 @@ from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 
 import requests as http_requests
+import re
 
-from .models import PasswordResetToken
+from .models import PasswordResetToken, EmailVerificationCode
 
 User = get_user_model()
 
@@ -30,25 +31,53 @@ def get_tokens_for_user(user):
     }
 
 
+def is_valid_email(value):
+    return re.match(r'^[^@]+@[^@]+\.[^@]+$', value) is not None
+
+
+def is_valid_phone(value):
+    return re.match(r'^\+?[0-9]{9,15}$', value) is not None
+
+
+def send_verification_email(user, code):
+    html_message = render_to_string(
+        "auth/email_verification.html",
+        {
+            "user": user,
+            "code": code,
+            "year": timezone.now().year,
+        },
+    )
+    send_mail(
+        subject="Your NABTA Verification Code",
+        message=f"Your verification code is: {code}. It expires in 15 minutes.",
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        html_message=html_message,
+        fail_silently=False,
+    )
+
+
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(
         operation_summary="Register a new user",
         operation_description=(
-            "Creates a new NABTA account. The role is always set to **farmer** automatically — "
-            "you cannot choose a role at registration. Username is automatically set to the email address."
+            "Creates a new NABTA farmer account using either **email** or **phone number**.\n\n"
+            "- If registering with **email**: a 6-digit verification code is sent to the email. Use `/auth/verify-email/` to verify.\n"
+            "- If registering with **phone**: account is created directly, no code is sent.\n\n"
+            "Provide either `email` or `phone` — not both. `identifier` is used for login."
         ),
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["email", "password", "confirm_password"],
+            required=["identifier", "password", "confirm_password"],
             properties={
-                "email": openapi.Schema(type=openapi.TYPE_STRING, format="email", example="farmer@nabat.com"),
+                "identifier": openapi.Schema(type=openapi.TYPE_STRING, example="farmer@nabta.com or +213555123456", description="Email address or phone number"),
                 "password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="StrongPass123!"),
                 "confirm_password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="StrongPass123!"),
                 "first_name": openapi.Schema(type=openapi.TYPE_STRING, example="Ahmed"),
                 "last_name": openapi.Schema(type=openapi.TYPE_STRING, example="Benali"),
-                "phone": openapi.Schema(type=openapi.TYPE_STRING, example="+213555123456"),
             },
         ),
         responses={
@@ -58,14 +87,15 @@ class RegisterView(APIView):
                     type=openapi.TYPE_OBJECT,
                     properties={
                         "message": openapi.Schema(type=openapi.TYPE_STRING),
+                        "registration_type": openapi.Schema(type=openapi.TYPE_STRING, enum=["email", "phone"]),
+                        "email_verification_required": openapi.Schema(type=openapi.TYPE_BOOLEAN),
                         "user": openapi.Schema(
                             type=openapi.TYPE_OBJECT,
                             properties={
                                 "id": openapi.Schema(type=openapi.TYPE_STRING, format="uuid"),
-                                "email": openapi.Schema(type=openapi.TYPE_STRING),
-                                "first_name": openapi.Schema(type=openapi.TYPE_STRING),
-                                "last_name": openapi.Schema(type=openapi.TYPE_STRING),
-                                "role": openapi.Schema(type=openapi.TYPE_STRING, example="farmer", description="Always 'farmer' for self-registered accounts."),
+                                "email": openapi.Schema(type=openapi.TYPE_STRING, nullable=True),
+                                "phone": openapi.Schema(type=openapi.TYPE_STRING, nullable=True),
+                                "role": openapi.Schema(type=openapi.TYPE_STRING, example="farmer"),
                             },
                         ),
                         "tokens": openapi.Schema(
@@ -78,20 +108,22 @@ class RegisterView(APIView):
                     },
                 ),
             ),
-            400: "Validation error (email taken, password mismatch, etc.)",
+            400: "Validation error",
         },
         tags=["Authentication"],
     )
     def post(self, request):
-        email = request.data.get("email", "").strip().lower()
+        identifier = request.data.get("identifier", "").strip()
         password = request.data.get("password", "")
         confirm_password = request.data.get("confirm_password", "")
         first_name = request.data.get("first_name", "")
         last_name = request.data.get("last_name", "")
-        phone = request.data.get("phone", "")
 
-        if not email or not password:
-            return Response({"error": "Email and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not identifier:
+            return Response({"error": "Email or phone number is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not password:
+            return Response({"error": "Password is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         if password != confirm_password:
             return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
@@ -99,26 +131,52 @@ class RegisterView(APIView):
         if len(password) < 8:
             return Response({"error": "Password must be at least 8 characters."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if User.objects.filter(email=email).exists():
-            return Response({"error": "An account with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+        registration_type = None
 
-        user = User.objects.create_user(
-            email=email,
-            password=password,
-            first_name=first_name,
-            last_name=last_name,
-            phone=phone,
-            role='farmer',
-        )
+        if is_valid_email(identifier):
+            registration_type = "email"
+            if User.objects.filter(email=identifier.lower()).exists():
+                return Response({"error": "An account with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+            user = User.objects.create_user(
+                email=identifier.lower(),
+                password=password,
+                first_name=first_name,
+                last_name=last_name,
+                role='farmer',
+            )
+            code = EmailVerificationCode.generate_code()
+            EmailVerificationCode.objects.create(user=user, code=code)
+            try:
+                send_verification_email(user, code)
+            except Exception:
+                pass
+
+        elif is_valid_phone(identifier):
+            registration_type = "phone"
+            if User.objects.filter(phone=identifier).exists():
+                return Response({"error": "An account with this phone number already exists."}, status=status.HTTP_400_BAD_REQUEST)
+            user = User.objects.create_user(
+                phone=identifier,
+                password=password,
+                first_name=first_name,
+                last_name=last_name,
+                role='farmer',
+            )
+
+        else:
+            return Response({"error": "Provide a valid email address or phone number."}, status=status.HTTP_400_BAD_REQUEST)
 
         tokens = get_tokens_for_user(user)
 
         return Response(
             {
-                "message": "Account created successfully. Welcome to NABAT!",
+                "message": "Account created successfully. Welcome to NABTA!" if registration_type == "phone" else "Account created. Please verify your email.",
+                "registration_type": registration_type,
+                "email_verification_required": registration_type == "email",
                 "user": {
                     "id": str(user.id),
                     "email": user.email,
+                    "phone": user.phone,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "role": user.role,
@@ -129,17 +187,102 @@ class RegisterView(APIView):
         )
 
 
+class VerifyEmailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Verify email with 6-digit code",
+        operation_description="Submit the 6-digit code sent to the user's email after registration. Marks the account as email-verified.",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["code"],
+            properties={
+                "code": openapi.Schema(type=openapi.TYPE_STRING, example="483921", description="6-digit verification code sent to the email"),
+            },
+        ),
+        responses={
+            200: "Email verified successfully",
+            400: "Invalid or expired code",
+        },
+        security=[{"Bearer": []}],
+        tags=["Authentication"],
+    )
+    def post(self, request):
+        code = request.data.get("code", "").strip()
+
+        if not code:
+            return Response({"error": "Verification code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.user.is_email_verified:
+            return Response({"message": "Email is already verified."}, status=status.HTTP_200_OK)
+
+        try:
+            verification = EmailVerificationCode.objects.filter(
+                user=request.user,
+                code=code,
+                is_used=False
+            ).latest('created_at')
+        except EmailVerificationCode.DoesNotExist:
+            return Response({"error": "Invalid verification code."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if verification.is_expired():
+            return Response({"error": "Verification code has expired. Request a new one."}, status=status.HTTP_400_BAD_REQUEST)
+
+        verification.is_used = True
+        verification.save()
+
+        request.user.is_email_verified = True
+        request.user.save()
+
+        return Response({"message": "Email verified successfully."}, status=status.HTTP_200_OK)
+
+
+class ResendVerificationCodeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Resend email verification code",
+        operation_description="Generates and sends a new 6-digit verification code to the user's email. Previous codes are invalidated.",
+        responses={
+            200: "New code sent",
+            400: "Email already verified or user has no email",
+        },
+        security=[{"Bearer": []}],
+        tags=["Authentication"],
+    )
+    def post(self, request):
+        user = request.user
+
+        if user.is_email_verified:
+            return Response({"message": "Email is already verified."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.email:
+            return Response({"error": "No email address associated with this account."}, status=status.HTTP_400_BAD_REQUEST)
+
+        EmailVerificationCode.objects.filter(user=user, is_used=False).update(is_used=True)
+
+        code = EmailVerificationCode.generate_code()
+        EmailVerificationCode.objects.create(user=user, code=code)
+
+        try:
+            send_verification_email(user, code)
+        except Exception:
+            return Response({"error": "Failed to send email. Try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({"message": "A new verification code has been sent to your email."}, status=status.HTTP_200_OK)
+
+
 class LoginView(APIView):
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(
-        operation_summary="Login with email and password",
-        operation_description="Authenticates a user and returns JWT access and refresh tokens.",
+        operation_summary="Login with email or phone",
+        operation_description="Authenticates a user using either email or phone number plus password. Returns JWT tokens.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["email", "password"],
+            required=["identifier", "password"],
             properties={
-                "email": openapi.Schema(type=openapi.TYPE_STRING, format="email", example="farmer@nabat.com"),
+                "identifier": openapi.Schema(type=openapi.TYPE_STRING, example="farmer@nabta.com or +213555123456", description="Email address or phone number"),
                 "password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="StrongPass123!"),
             },
         ),
@@ -154,19 +297,20 @@ class LoginView(APIView):
                             type=openapi.TYPE_OBJECT,
                             properties={
                                 "id": openapi.Schema(type=openapi.TYPE_STRING, format="uuid"),
-                                "email": openapi.Schema(type=openapi.TYPE_STRING),
+                                "email": openapi.Schema(type=openapi.TYPE_STRING, nullable=True),
+                                "phone": openapi.Schema(type=openapi.TYPE_STRING, nullable=True),
                                 "first_name": openapi.Schema(type=openapi.TYPE_STRING),
                                 "last_name": openapi.Schema(type=openapi.TYPE_STRING),
-                                "phone": openapi.Schema(type=openapi.TYPE_STRING),
-                                "bio": openapi.Schema(type=openapi.TYPE_STRING),
+                                "role": openapi.Schema(type=openapi.TYPE_STRING),
+                                "is_email_verified": openapi.Schema(type=openapi.TYPE_BOOLEAN),
                                 "avatar": openapi.Schema(type=openapi.TYPE_STRING, format="uri", nullable=True),
                             },
                         ),
                         "tokens": openapi.Schema(
                             type=openapi.TYPE_OBJECT,
                             properties={
-                                "access": openapi.Schema(type=openapi.TYPE_STRING, description="Short-lived JWT token. Send as: Authorization: Bearer <access>"),
-                                "refresh": openapi.Schema(type=openapi.TYPE_STRING, description="Long-lived token. Use /auth/token/refresh/ to get a new access token."),
+                                "access": openapi.Schema(type=openapi.TYPE_STRING),
+                                "refresh": openapi.Schema(type=openapi.TYPE_STRING),
                             },
                         ),
                     },
@@ -178,18 +322,22 @@ class LoginView(APIView):
         tags=["Authentication"],
     )
     def post(self, request):
-        email = request.data.get("email", "").strip().lower()
+        identifier = request.data.get("identifier", "").strip()
         password = request.data.get("password", "")
 
-        if not email or not password:
-            return Response({"error": "Email and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not identifier or not password:
+            return Response({"error": "Identifier and password are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({"error": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
+        user = None
 
-        if not user.check_password(password):
+        if is_valid_email(identifier):
+            user = User.objects.filter(email=identifier.lower()).first()
+        elif is_valid_phone(identifier):
+            user = User.objects.filter(phone=identifier).first()
+        else:
+            return Response({"error": "Provide a valid email or phone number."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user or not user.check_password(password):
             return Response({"error": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
         if not user.is_active:
@@ -203,10 +351,11 @@ class LoginView(APIView):
                 "user": {
                     "id": str(user.id),
                     "email": user.email,
+                    "phone": user.phone,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "role": user.role,
-                    "phone": user.phone,
+                    "is_email_verified": user.is_email_verified,
                     "bio": user.bio,
                     "avatar": request.build_absolute_uri(user.avatar.url) if user.avatar else None,
                 },
@@ -221,18 +370,15 @@ class LogoutView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Logout (blacklist refresh token)",
-        operation_description="Blacklists the provided refresh token, effectively logging the user out. The access token will still be valid until it expires — frontend must discard it.",
+        operation_description="Blacklists the provided refresh token, effectively logging the user out.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["refresh"],
             properties={
-                "refresh": openapi.Schema(type=openapi.TYPE_STRING, description="The refresh token received at login."),
+                "refresh": openapi.Schema(type=openapi.TYPE_STRING),
             },
         ),
-        responses={
-            200: openapi.Response(description="Logged out successfully"),
-            400: "Invalid or missing refresh token",
-        },
+        responses={200: "Logged out successfully", 400: "Invalid or missing refresh token"},
         security=[{"Bearer": []}],
         tags=["Authentication"],
     )
@@ -256,27 +402,7 @@ class ProfileView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Get current user profile",
-        operation_description="Returns the full profile of the currently authenticated user.",
-        responses={
-            200: openapi.Response(
-                description="User profile",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "id": openapi.Schema(type=openapi.TYPE_STRING, format="uuid"),
-                        "email": openapi.Schema(type=openapi.TYPE_STRING),
-                        "username": openapi.Schema(type=openapi.TYPE_STRING),
-                        "first_name": openapi.Schema(type=openapi.TYPE_STRING),
-                        "last_name": openapi.Schema(type=openapi.TYPE_STRING),
-                        "phone": openapi.Schema(type=openapi.TYPE_STRING),
-                        "bio": openapi.Schema(type=openapi.TYPE_STRING),
-                        "avatar": openapi.Schema(type=openapi.TYPE_STRING, format="uri", nullable=True),
-                        "is_email_verified": openapi.Schema(type=openapi.TYPE_BOOLEAN),
-                        "created_at": openapi.Schema(type=openapi.TYPE_STRING, format="date-time"),
-                    },
-                ),
-            ),
-        },
+        responses={200: "User profile"},
         security=[{"Bearer": []}],
         tags=["Profile"],
     )
@@ -286,11 +412,11 @@ class ProfileView(APIView):
             {
                 "id": str(user.id),
                 "email": user.email,
+                "phone": user.phone,
                 "username": user.username,
                 "first_name": user.first_name,
                 "last_name": user.last_name,
                 "role": user.role,
-                "phone": user.phone,
                 "bio": user.bio,
                 "avatar": request.build_absolute_uri(user.avatar.url) if user.avatar else None,
                 "is_email_verified": user.is_email_verified,
@@ -300,29 +426,23 @@ class ProfileView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Update current user profile",
-        operation_description="Updates one or more profile fields. All fields are optional. To update avatar, send as multipart/form-data.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             properties={
-                "first_name": openapi.Schema(type=openapi.TYPE_STRING, example="Ahmed"),
-                "last_name": openapi.Schema(type=openapi.TYPE_STRING, example="Benali"),
-                "phone": openapi.Schema(type=openapi.TYPE_STRING, example="+213555123456"),
-                "bio": openapi.Schema(type=openapi.TYPE_STRING, example="Wheat farmer from Setif."),
-                "avatar": openapi.Schema(type=openapi.TYPE_STRING, format="binary", description="Profile image file (multipart/form-data)"),
+                "first_name": openapi.Schema(type=openapi.TYPE_STRING),
+                "last_name": openapi.Schema(type=openapi.TYPE_STRING),
+                "phone": openapi.Schema(type=openapi.TYPE_STRING),
+                "bio": openapi.Schema(type=openapi.TYPE_STRING),
+                "avatar": openapi.Schema(type=openapi.TYPE_STRING, format="binary"),
             },
         ),
-        responses={
-            200: openapi.Response(description="Profile updated successfully"),
-            400: "Validation error",
-        },
+        responses={200: "Profile updated", 400: "Validation error"},
         security=[{"Bearer": []}],
         tags=["Profile"],
     )
     def patch(self, request):
         user = request.user
-        allowed_fields = ["first_name", "last_name", "phone", "bio"]
-
-        for field in allowed_fields:
+        for field in ["first_name", "last_name", "phone", "bio"]:
             if field in request.data:
                 setattr(user, field, request.data[field])
 
@@ -337,10 +457,10 @@ class ProfileView(APIView):
                 "user": {
                     "id": str(user.id),
                     "email": user.email,
+                    "phone": user.phone,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "role": user.role,
-                    "phone": user.phone,
                     "bio": user.bio,
                     "avatar": request.build_absolute_uri(user.avatar.url) if user.avatar else None,
                 },
@@ -349,10 +469,7 @@ class ProfileView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Delete current user account",
-        operation_description="Permanently deletes the authenticated user's account. This action is irreversible.",
-        responses={
-            204: "Account deleted successfully",
-        },
+        responses={204: "Account deleted"},
         security=[{"Bearer": []}],
         tags=["Profile"],
     )
@@ -366,21 +483,16 @@ class ChangePasswordView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Change password",
-        operation_description="Changes the password of the currently authenticated user. Requires the old password for verification.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["old_password", "new_password", "confirm_new_password"],
             properties={
-                "old_password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="OldPass123!"),
-                "new_password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="NewPass456!"),
-                "confirm_new_password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="NewPass456!"),
+                "old_password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
+                "new_password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
+                "confirm_new_password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
             },
         ),
-        responses={
-            200: "Password changed successfully",
-            400: "Validation error",
-            401: "Wrong old password",
-        },
+        responses={200: "Password changed", 400: "Validation error", 401: "Wrong old password"},
         security=[{"Bearer": []}],
         tags=["Profile"],
     )
@@ -409,26 +521,16 @@ class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(
-        operation_summary="Request password reset email",
-        operation_description="Sends a password reset link to the given email address. The link expires in 1 hour. For security, always returns 200 even if the email does not exist.",
+        operation_summary="Request password reset",
+        operation_description="Sends a password reset link to the given email. Always returns 200 for security.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["email"],
             properties={
-                "email": openapi.Schema(type=openapi.TYPE_STRING, format="email", example="farmer@nabat.com"),
+                "email": openapi.Schema(type=openapi.TYPE_STRING, format="email"),
             },
         ),
-        responses={
-            200: openapi.Response(
-                description="Reset email sent (or silently ignored if email not found)",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "message": openapi.Schema(type=openapi.TYPE_STRING),
-                    },
-                ),
-            ),
-        },
+        responses={200: "Reset email sent"},
         tags=["Password Reset"],
     )
     def post(self, request):
@@ -441,15 +543,11 @@ class ForgotPasswordView(APIView):
 
             html_message = render_to_string(
                 "auth/password_reset_email.html",
-                {
-                    "user": user,
-                    "reset_url": reset_url,
-                    "year": timezone.now().year,
-                },
+                {"user": user, "reset_url": reset_url, "year": timezone.now().year},
             )
 
             send_mail(
-                subject="Reset Your NABAT Password",
+                subject="Reset Your NABTA Password",
                 message=strip_tags(html_message),
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
@@ -470,20 +568,16 @@ class ResetPasswordView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Reset password using token",
-        operation_description="Resets the user's password using the token received in the reset email. The token is a UUID found in the reset link URL.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["token", "new_password", "confirm_new_password"],
             properties={
-                "token": openapi.Schema(type=openapi.TYPE_STRING, format="uuid", description="UUID token from the reset link URL", example="550e8400-e29b-41d4-a716-446655440000"),
-                "new_password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="NewSecurePass123!"),
-                "confirm_new_password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="NewSecurePass123!"),
+                "token": openapi.Schema(type=openapi.TYPE_STRING, format="uuid"),
+                "new_password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
+                "confirm_new_password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
             },
         ),
-        responses={
-            200: "Password reset successfully",
-            400: "Invalid or expired token, or password mismatch",
-        },
+        responses={200: "Password reset successfully", 400: "Invalid or expired token"},
         tags=["Password Reset"],
     )
     def post(self, request):
@@ -500,7 +594,7 @@ class ResetPasswordView(APIView):
             return Response({"error": "Invalid or already used token."}, status=status.HTTP_400_BAD_REQUEST)
 
         if reset_token.is_expired():
-            return Response({"error": "This reset link has expired. Please request a new one."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "This reset link has expired."}, status=status.HTTP_400_BAD_REQUEST)
 
         if new_password != confirm_new_password:
             return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
@@ -515,7 +609,7 @@ class ResetPasswordView(APIView):
         reset_token.is_used = True
         reset_token.save()
 
-        return Response({"message": "Password has been reset successfully. You can now log in."}, status=status.HTTP_200_OK)
+        return Response({"message": "Password has been reset successfully."}, status=status.HTTP_200_OK)
 
 
 class GoogleOAuthView(APIView):
@@ -524,53 +618,18 @@ class GoogleOAuthView(APIView):
     @swagger_auto_schema(
         operation_summary="Login / Register with Google OAuth",
         operation_description=(
-            "Authenticates a user using a Google OAuth access token obtained from the Google OAuth2 flow on the frontend. "
-            "If the Google account is new to NABAT, a new user is automatically created. "
-            "Returns JWT tokens just like a normal login.\n\n"
-            "**Frontend flow:**\n"
-            "1. Implement Google Sign-In on the frontend (e.g. using `@react-oauth/google`)\n"
-            "2. Get the Google access token after user approves\n"
-            "3. Send that token to this endpoint"
+            "Authenticates a user using a Google OAuth access token. "
+            "If the Google account is new to NABTA, a new user is automatically created."
         ),
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["access_token"],
             properties={
-                "access_token": openapi.Schema(
-                    type=openapi.TYPE_STRING,
-                    description="The Google OAuth2 access token returned by Google Sign-In on the frontend.",
-                    example="ya29.a0AfH6SMBxxxxxx...",
-                ),
+                "access_token": openapi.Schema(type=openapi.TYPE_STRING, example="ya29.a0AfH6SMBxxxxxx..."),
             },
         ),
         responses={
-            200: openapi.Response(
-                description="Google login successful",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "message": openapi.Schema(type=openapi.TYPE_STRING),
-                        "is_new_user": openapi.Schema(type=openapi.TYPE_BOOLEAN, description="True if this is the first time this Google account was used on NABAT"),
-                        "user": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "id": openapi.Schema(type=openapi.TYPE_STRING, format="uuid"),
-                                "email": openapi.Schema(type=openapi.TYPE_STRING),
-                                "first_name": openapi.Schema(type=openapi.TYPE_STRING),
-                                "last_name": openapi.Schema(type=openapi.TYPE_STRING),
-                                "avatar": openapi.Schema(type=openapi.TYPE_STRING, format="uri", nullable=True),
-                            },
-                        ),
-                        "tokens": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "access": openapi.Schema(type=openapi.TYPE_STRING),
-                                "refresh": openapi.Schema(type=openapi.TYPE_STRING),
-                            },
-                        ),
-                    },
-                ),
-            ),
+            200: "Google login successful",
             400: "Missing or invalid Google token",
             503: "Google API unreachable",
         },
@@ -642,53 +701,29 @@ class GoogleOAuthView(APIView):
             status=status.HTTP_200_OK,
         )
 
+
 class CreateAdminView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Create a new admin account",
-        operation_description=(
-            "Allows an existing admin to create a new admin account directly. "
-            "The created user will have the **admin** role and `is_staff=True` automatically. "
-            "Only users with `role='admin'` can access this endpoint.\n\n"
-            "**Authorization:** `Bearer <admin_access_token>`"
-        ),
+        operation_description="Allows an existing admin to create a new admin account. Only admins can access this.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["email", "password", "confirm_password"],
             properties={
                 "email": openapi.Schema(type=openapi.TYPE_STRING, format="email", example="newadmin@nabta.com"),
-                "password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="AdminPass123!"),
-                "confirm_password": openapi.Schema(type=openapi.TYPE_STRING, format="password", example="AdminPass123!"),
-                "first_name": openapi.Schema(type=openapi.TYPE_STRING, example="Karim"),
-                "last_name": openapi.Schema(type=openapi.TYPE_STRING, example="Mansouri"),
-                "phone": openapi.Schema(type=openapi.TYPE_STRING, example="+213555987654"),
+                "password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
+                "confirm_password": openapi.Schema(type=openapi.TYPE_STRING, format="password"),
+                "first_name": openapi.Schema(type=openapi.TYPE_STRING),
+                "last_name": openapi.Schema(type=openapi.TYPE_STRING),
+                "phone": openapi.Schema(type=openapi.TYPE_STRING),
             },
         ),
         responses={
-            201: openapi.Response(
-                description="Admin account created successfully",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "message": openapi.Schema(type=openapi.TYPE_STRING),
-                        "admin": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "id": openapi.Schema(type=openapi.TYPE_STRING, format="uuid"),
-                                "email": openapi.Schema(type=openapi.TYPE_STRING),
-                                "first_name": openapi.Schema(type=openapi.TYPE_STRING),
-                                "last_name": openapi.Schema(type=openapi.TYPE_STRING),
-                                "role": openapi.Schema(type=openapi.TYPE_STRING, example="admin"),
-                                "is_staff": openapi.Schema(type=openapi.TYPE_BOOLEAN, example=True),
-                                "created_at": openapi.Schema(type=openapi.TYPE_STRING, format="date-time"),
-                            },
-                        ),
-                    },
-                ),
-            ),
-            400: "Validation error (email taken, password mismatch, weak password)",
-            403: "Forbidden — only admins can access this endpoint",
+            201: "Admin created",
+            400: "Validation error",
+            403: "Only admins can access this",
         },
         security=[{"Bearer": []}],
         tags=["Admin"],
@@ -721,7 +756,7 @@ class CreateAdminView(APIView):
             password=password,
             first_name=first_name,
             last_name=last_name,
-            phone=phone,
+            phone=phone or None,
             role='admin',
         )
 

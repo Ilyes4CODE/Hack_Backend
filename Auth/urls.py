@@ -11,6 +11,8 @@ from .views import (
     ResetPasswordView,
     GoogleOAuthView,
     CreateAdminView,
+    VerifyEmailView,
+    ResendVerificationCodeView,
 )
 
 urlpatterns = [
@@ -24,4 +26,6 @@ urlpatterns = [
     path("reset-password/", ResetPasswordView.as_view(), name="auth-reset-password"),
     path("google/", GoogleOAuthView.as_view(), name="auth-google"),
     path("admin/create/", CreateAdminView.as_view(), name="auth-create-admin"),
+    path("verify-email/", VerifyEmailView.as_view(), name="auth-verify-email"),
+    path("resend-verification/", ResendVerificationCodeView.as_view(), name="auth-resend-verification"),
 ]

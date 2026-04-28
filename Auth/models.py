@@ -1,14 +1,20 @@
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 import uuid
+import random
 
 
 class UserManager(BaseUserManager):
-    def create_user(self, email, password=None, **extra_fields):
-        if not email:
-            raise ValueError("Email is required")
-        email = self.normalize_email(email)
-        user = self.model(email=email, username=email, **extra_fields)
+    def create_user(self, email=None, phone=None, password=None, **extra_fields):
+        if not email and not phone:
+            raise ValueError("Email or phone is required")
+        if email:
+            email = self.normalize_email(email)
+        user = self.model(email=email, phone=phone, **extra_fields)
+        if email:
+            user.username = email
+        else:
+            user.username = phone
         user.set_password(password)
         user.save(using=self._db)
         return user
@@ -17,7 +23,7 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("role", "admin")
-        return self.create_user(email, password, **extra_fields)
+        return self.create_user(email=email, password=password, **extra_fields)
 
 
 class User(AbstractBaseUser, PermissionsMixin):
@@ -28,11 +34,11 @@ class User(AbstractBaseUser, PermissionsMixin):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    email = models.EmailField(unique=True)
+    email = models.EmailField(unique=True, null=True, blank=True)
     username = models.CharField(max_length=255, unique=True)
     first_name = models.CharField(max_length=150, blank=True)
     last_name = models.CharField(max_length=150, blank=True)
-    phone = models.CharField(max_length=20, blank=True)
+    phone = models.CharField(max_length=20, unique=True, null=True, blank=True)
     bio = models.TextField(blank=True)
     avatar = models.ImageField(upload_to="avatars/", null=True, blank=True)
     role = models.CharField(max_length=10, choices=ROLES, default='farmer')
@@ -45,17 +51,20 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     objects = UserManager()
 
-    USERNAME_FIELD = "email"
+    USERNAME_FIELD = "username"
     REQUIRED_FIELDS = []
 
     def save(self, *args, **kwargs):
-        self.username = self.email
+        if self.email and not self.username:
+            self.username = self.email
+        elif self.phone and not self.username:
+            self.username = self.phone
         if self.role == 'admin':
             self.is_staff = True
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.email} ({self.role})"
+        return f"{self.email or self.phone} ({self.role})"
 
 
 class PasswordResetToken(models.Model):
@@ -70,4 +79,23 @@ class PasswordResetToken(models.Model):
         return timezone.now() > self.created_at + timedelta(hours=1)
 
     def __str__(self):
-        return f"Reset token for {self.user.email}"
+        return f"Reset token for {self.user}"
+
+
+class EmailVerificationCode(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="verification_codes")
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_used = models.BooleanField(default=False)
+
+    def is_expired(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        return timezone.now() > self.created_at + timedelta(minutes=15)
+
+    @staticmethod
+    def generate_code():
+        return str(random.randint(100000, 999999))
+
+    def __str__(self):
+        return f"Verification code for {self.user}"
